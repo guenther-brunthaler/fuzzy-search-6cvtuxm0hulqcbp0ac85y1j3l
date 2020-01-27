@@ -1,4 +1,4 @@
-/* Version 2020.27
+/* Version 2020.27.1
  * Copyright (c) 2019-2020 Guenther Brunthaler. All rights reserved.
  *
  * This source file is free software.
@@ -34,6 +34,10 @@ struct minimal_resource {
 
 static void release_c1(void) {
    while (r4g.rlist) (*r4g.rlist)();
+}
+
+static void release_after_c1(r4g_action *keep_this) {
+   while (r4g.rlist != keep_this) (*r4g.rlist)();
 }
 
 static void error_c1(char const *static_message) {
@@ -72,6 +76,10 @@ static void raise_write_error_c1(void) {
    error_c1(T("Write error!"));
 }
 
+static void raise_read_error_c1(void) {
+   error_c1(T("Read error!"));
+}
+
 static void fflush_c1(FILE *stream) {
    if (fflush(stream)) raise_write_error_c1();
 }
@@ -99,13 +107,118 @@ static void a4_feed(char const *key_segment, size_t bytes) {
 }
 
 static void a4_warmup(void) {
-   unsigned i, j, k= 3 * (unsigned)DIM(sbox);
+   unsigned i, j, k= 256 + 3 * (unsigned)DIM(sbox);
    i= j= 0;
    while (k--) {
       i= i + 1 & SBOX_MOD;
       j= j + sbox[i] & SBOX_MOD;
       SWAP_ELEMENTS(sbox, i, j);
    }
+}
+
+static void setup_pearson(void) {
+   a4_init();
+   {
+      static const char personalizer[]=
+         "Pearson hash seeded by ARCFOUR CSPRNG"
+      ;
+      a4_feed(personalizer, DIM(personalizer));
+   }
+   a4_warmup();
+}
+
+typedef struct {
+   char *start;
+   size_t length, capacity;
+} bdesc;
+
+typedef struct {
+   bdesc b;
+   r4g_action dtor, *saved;
+} bdres;
+
+static void bdesc_init_c0(bdesc *b) {
+   b->start= 0; b->length= b->capacity= 0;
+}
+
+static void bdesc_resize_c1(bdesc *b, size_t required) {
+   if (required) {
+      size_t ncap= 128;
+      void *new_p;
+      assert(required >= b->length);
+      required+= 80;
+      while (ncap < required) ncap+= ncap;
+      assert(!b->start == !b->capacity);
+      if (!(new_p= realloc(b->start, ncap))) {
+         error_c1(T("Memory allocation failure!"));
+      }
+      b->start= new_p;
+      b->capacity= ncap;
+   } else {
+      void *p;
+      if (p= b->start) {
+         bdesc_init_c0(b);
+         free(p);
+      }
+      assert(!b->start); assert(!b->length); assert(!b->capacity);
+   }
+}
+
+static void bdres_dtor(void) {
+   R4G_DEFINE_INIT_RPTR(bdres, *r=, dtor);
+   r4g.rlist= r->saved;
+   bdesc_resize_c1(&r->b, 0);
+}
+
+static void bdres_init_c4(bdres *r) {
+   bdesc_init_c0(&r->b);
+   r->saved= r4g.rlist;
+   r->dtor= &bdres_dtor;
+   r4g.rlist= &r->dtor;
+}
+
+/* Set the first unused buffer byte to a zero value and return a pointer to
+ * the resulting buffer as a null-terminated string. Will grow the buffer if
+ * no unused capacity bytes are available. */
+static char *cstr_c1(bdesc *s) {
+   if (s->capacity <= s->length) {
+      assert(s->capacity == s->length);
+      bdesc_resize_c1(s, s->length + 1);
+      assert(s->length < s->capacity);
+   }
+   s->start[s->length]= '\0';
+}
+
+static int gets_c1(bdesc *b, size_t max_columns) {
+   size_t i, n;
+   int c;
+   i= b->length= 0; n= b->capacity;
+   while ((c= getchar()) != EOF) {
+      if (c == '\n') goto enough;
+      if (i >= max_columns) {
+         error_c1(T("Input line too long!"));
+      }
+      if (i >= n) {
+         bdesc_resize_c1(b, i + 1);
+         n= b->capacity;
+         assert(i < n);
+      }
+      b->start[i++]= (char)c;
+   }
+   if (ferror(stdin)) raise_read_error_c1();
+   assert(feof(stdin));
+   enough:
+   b->length= i;
+   (void)cstr_c1(b);
+   return c != EOF || i;
+}
+
+static void index_stdin(void) {
+   r4g_action *mark= r4g.rlist;
+   bdres line;
+   bdres_init_c4(&line);
+   while (gets_c1(&line.b, 16384)) ;
+   release_after_c1(mark);
 }
 
 int main(int argc, char **argv) {
@@ -124,6 +237,9 @@ int main(int argc, char **argv) {
          )
       );
    }
+   (void)argv;
+   setup_pearson();
+   index_stdin();
    done:
    fflush_c1(0);
    release_c1();
