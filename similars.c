@@ -219,12 +219,16 @@ static int gets_c1(bdesc *b, size_t max_columns) {
 }
 
 static void bdesc_append_c1(bdesc *dst, void *const *src, size_t bytes) {
-   if (bytes > dst->capacity) bdesc_resize_c1(dst, bytes);
-   (void)memcpy(dst->start, src, dst->length= bytes);
+   if (dst->length + bytes > dst->capacity) {
+      bdesc_resize_c1(dst, dst->length + bytes);
+   }
+   (void)memcpy(dst->start + dst->length, src, bytes);
+   dst->length+= bytes;
 }
 
-static void simhash_c1(bdesc *dst, void const *buffer, size_t bytes) {
-   dst->length= 0; bdesc_append_c1(dst, buffer, bytes);
+/* Append a string to a string buffer. Does not copy the null terminator. */
+static void cstrcat_c1(bdesc *dst, char const *src) {
+   bdesc_append_c1(dst, (void const *)src, strlen(src));
 }
 
 static void bin_to_base32_c1(bdesc *dst, char const *buffer, size_t bytes) {
@@ -277,6 +281,10 @@ static void bin_to_base32_c1(bdesc *dst, char const *buffer, size_t bytes) {
    #undef BITS
 }
 
+static void simhash_c1(bdesc *dst, void const *buffer, size_t bytes) {
+   dst->length= 0; bdesc_append_c1(dst, buffer, bytes);
+}
+
 static void index_stdin(void) {
    r4g_action *mark= r4g.rlist;
    bdres line, out, hash;
@@ -291,6 +299,8 @@ static void index_stdin(void) {
          &hash.b, line.b.start, brk ? brk - line.b.start : line.b.length
       );
       bin_to_base32_c1(&out.b, hash.b.start, hash.b.length);
+      cstrcat_c1(&out.b, " ");
+      cstrcat_c1(&out.b, brk ? brk : line.b.start);
       puts_c1(cstr_c1(&out.b));
    }
    release_after_c1(mark);
