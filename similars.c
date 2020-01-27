@@ -1,4 +1,4 @@
-/* Version 2020.27.1
+/* Version 2020.27.2
  * Copyright (c) 2019-2020 Guenther Brunthaler. All rights reserved.
  *
  * This source file is free software.
@@ -10,6 +10,12 @@
 #include <stddef.h>
 #include <string.h>
 #include <assert.h>
+
+/* Use W-Shingling which characters as "words". */
+#define W 4
+
+/* Output width of the SimHash, does not have to be a multiply of anything. */
+#define HASH_BITS 64
 
 #define T(text) text
 
@@ -232,9 +238,9 @@ static void cstrcat_c1(bdesc *dst, char const *src) {
 }
 
 static void bin_to_base32_c1(bdesc *dst, char const *buffer, size_t bytes) {
-   #define BITS 5
+   #define BITS 1
    static char const alphabet[(1 << BITS) + 1]= {
-      #if BITS == 2
+      #if BITS == 1
          "01"
       #elif BITS == 4
          "0123456789ABCDEF"
@@ -281,8 +287,69 @@ static void bin_to_base32_c1(bdesc *dst, char const *buffer, size_t bytes) {
    #undef BITS
 }
 
-static void simhash_c1(bdesc *dst, void const *buffer, size_t bytes) {
-   dst->length= 0; bdesc_append_c1(dst, buffer, bytes);
+static void simhash(bdesc *dst, void const *buffer, size_t bytes) {
+   r4g_action *mark;
+   bdres hash;
+   long *bits;
+   unsigned i;
+   size_t window_start;
+   if (bytes < W) {
+      dst->length= 0;
+      return;
+   }
+   mark= r4g.rlist;
+   bdres_init_c4(&hash);
+   bdesc_resize_c1(&hash.b, HASH_BITS * sizeof *bits);
+   bits= (void *)hash.b.start;
+   for (i= HASH_BITS; i--; ) bits[i]= 0;
+   for (window_start= 0; window_start + W <= bytes; ++window_start) {
+      char const *window= (char const *)buffer + window_start;
+      unsigned hash_bit, hash_bitmask= 0, pearson_hash, hash_byte= 0;
+      for (hash_bit= 0; hash_bit < HASH_BITS; ++hash_bit) {
+         if (!hash_bitmask) {
+            /* Calculate octet with index <hash_byte> of the Pearson hash. */
+            pearson_hash= sbox[window[i= 0] + hash_byte++];
+            while (++i < W) pearson_hash= sbox[pearson_hash ^ window[i]];
+            hash_bitmask= 1 << 8 - 1;
+         }
+         if (pearson_hash & hash_bitmask) {
+            ++bits[hash_bit];
+         } else {
+            --bits[hash_bit];
+         }
+         hash_bitmask>>= 1;
+      }
+   }
+   {
+      unsigned m, o, mask, buf;
+      char *out;
+      o= mask= 0;
+      out= dst->start; m= dst->capacity;
+      for (i= 0; i < HASH_BITS; ++i) {
+         if (!mask) { buf= 0; mask= 1 << CHAR_BIT - 1; }
+         if (bits[i] > 0) buf|= mask;
+         if (!(mask>>= 1)) {
+            if (o >= m) {
+               assert(o == m);
+               bdesc_resize_c1(dst, o + 1);
+               out= dst->start; m= dst->capacity;
+               assert(o < m);
+            }
+            out[o++]= (char)(buf & UCHAR_MAX);
+         }
+      }
+      if (mask) {
+         if (o >= m) {
+            assert(o == m);
+            bdesc_resize_c1(dst, o + 1);
+            out= dst->start; m= dst->capacity;
+            assert(o < m);
+         }
+         out[o++]= (char)(buf & UCHAR_MAX);
+      }
+      dst->length= o;
+   }
+   release_after_c1(mark);
 }
 
 static void index_stdin(void) {
@@ -295,7 +362,7 @@ static void index_stdin(void) {
       if (brk= strstr(line.b.start, sep)) {
          *brk= '\0'; brk+= DIM(sep) - 1;
       }
-      simhash_c1(
+      simhash(
          &hash.b, line.b.start, brk ? brk - line.b.start : line.b.length
       );
       bin_to_base32_c1(&out.b, hash.b.start, hash.b.length);
