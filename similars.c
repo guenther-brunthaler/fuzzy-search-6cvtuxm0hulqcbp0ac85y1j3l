@@ -80,6 +80,10 @@ static void raise_read_error_c1(void) {
    error_c1(T("Read error!"));
 }
 
+static void puts_c1(char const *s) {
+   if (puts(s) < 0) raise_write_error_c1();
+}
+
 static void fflush_c1(FILE *stream) {
    if (fflush(stream)) raise_write_error_c1();
 }
@@ -187,6 +191,7 @@ static char *cstr_c1(bdesc *s) {
       assert(s->length < s->capacity);
    }
    s->start[s->length]= '\0';
+   return s->start;
 }
 
 static int gets_c1(bdesc *b, size_t max_columns) {
@@ -213,11 +218,81 @@ static int gets_c1(bdesc *b, size_t max_columns) {
    return c != EOF || i;
 }
 
+static void bdesc_append_c1(bdesc *dst, void *const *src, size_t bytes) {
+   if (bytes > dst->capacity) bdesc_resize_c1(dst, bytes);
+   (void)memcpy(dst->start, src, dst->length= bytes);
+}
+
+static void simhash_c1(bdesc *dst, void const *buffer, size_t bytes) {
+   dst->length= 0; bdesc_append_c1(dst, buffer, bytes);
+}
+
+static void bin_to_base32_c1(bdesc *dst, char const *buffer, size_t bytes) {
+   #define BITS 5
+   static char const alphabet[(1 << BITS) + 1]= {
+      #if BITS == 2
+         "01"
+      #elif BITS == 4
+         "0123456789ABCDEF"
+      #elif BITS == 5
+         #if 0 && defined RFC_3548
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+         #elif 1 || defined DUDE
+            "ABCDEFGHIJKMNPQRSTUVWXYZ23456789"
+         #endif
+      #elif BITS == 6
+         #if 0 && defined base64
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+         #elif 1 || defined url_and_filename_safe_base64
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+         #endif
+      #endif
+   };
+   unsigned buf, bufbits, i, o, m;
+   i= o= bufbits= 0;
+   #ifndef NDEBUG
+      buf= 0;
+   #endif
+   char *out= dst->start; m= dst->capacity;
+   while (i < bytes || bufbits) {
+      assert(bufbits < BITS);
+      if (i < bytes) {
+         buf<<= CHAR_BIT; bufbits+= CHAR_BIT;
+         buf|= (unsigned char)buffer[i++];
+      } else {
+         buf<<= BITS - bufbits; bufbits= BITS;
+      }
+      do {
+         assert(bufbits >= BITS);
+         if (o >= m) {
+            assert(o == m);
+            bdesc_resize_c1(dst, o + 1);
+            out= dst->start; m= dst->capacity;
+            assert(o < m);
+         }
+         out[o++]= alphabet[buf >> bufbits - BITS & (1 << BITS) - 1];
+      } while ((bufbits-= BITS) >= BITS);
+   }
+   dst->length= o;
+   #undef BITS
+}
+
 static void index_stdin(void) {
    r4g_action *mark= r4g.rlist;
-   bdres line;
-   bdres_init_c4(&line);
-   while (gets_c1(&line.b, 16384)) ;
+   bdres line, out, hash;
+   bdres_init_c4(&line); bdres_init_c4(&out); bdres_init_c4(&hash);
+   while (gets_c1(&line.b, 16384)) {
+      char const sep[]= "///";
+      char *brk;
+      if (brk= strstr(line.b.start, sep)) {
+         *brk= '\0'; brk+= DIM(sep) - 1;
+      }
+      simhash_c1(
+         &hash.b, line.b.start, brk ? brk - line.b.start : line.b.length
+      );
+      bin_to_base32_c1(&out.b, hash.b.start, hash.b.length);
+      puts_c1(cstr_c1(&out.b));
+   }
    release_after_c1(mark);
 }
 
